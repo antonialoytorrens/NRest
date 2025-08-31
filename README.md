@@ -1,6 +1,6 @@
 # NRest
 
-NRest is a lightweight and unofficial REST API for [n8n](https://n8n.io)®, written in C using [Ulfius](https://babelouest.github.io/ulfius) and [SQLite](https://sqlite.org).
+NRest is an unofficial REST API for [n8n](https://n8n.io)®, written in C using [Ulfius](https://babelouest.github.io/ulfius) and [SQLite](https://sqlite.org).
 
 This project tries to imitate the same functionality of the official n8n API, hosted in [api.n8n.io](https://api.n8n.io), but with limited features.
 
