@@ -1,23 +1,23 @@
 /*
-MIT LICENSE
-Copyright (c) 2025 Antoni Aloy Torrens
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is furnished
-to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+* MIT LICENSE
+* Copyright (c) 2025 Antoni Aloy Torrens
+* 
+* Permission is hereby granted, free of charge, to any person obtaining a copy
+* of this software and associated documentation files (the "Software"), to deal
+* in the Software without restriction, including without limitation the rights
+* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+* copies of the Software, and to permit persons to whom the Software is furnished
+* to do so, subject to the following conditions:
+* 
+* The above copyright notice and this permission notice shall be included in all
+* copies or substantial portions of the Software.
+* 
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+* FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+* COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+* IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+* WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
 /**
@@ -62,6 +62,18 @@ int callback_get_all_workflows(const struct _u_request *request, struct _u_respo
 int callback_create_collection(const struct _u_request *request, struct _u_response *response, void *user_data);
 int callback_add_workflow_to_collection(const struct _u_request *request, struct _u_response *response, void *user_data);
 
+// Initialize database and create tables with proper schema
+int init_database() {
+    int rc = sqlite3_open(DATABASE_FILE, &db);
+    if (rc) {
+        fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    
+    printf("Database initialized successfully\n");
+    return 0;
+}
+
 // Utility function to parse integer parameter with default
 int get_int_param(const struct _u_request *request, const char *param_name, int default_value) {
     const char *param_str = u_map_get(request->map_url, param_name);
@@ -74,17 +86,27 @@ int get_int_param(const struct _u_request *request, const char *param_name, int 
 
 // Get or create user if user does not exist
 int get_or_create_user(sqlite3 *db, json_t *user_json) {
-    if (!db || !json_is_object(user_json)) {
-        return 0; // Invalid input
+    if (!db) {
+        fprintf(stderr, "get_or_create_user ERROR: Invalid database.\n");
+        return 0;
     }
 
+    if (!json_is_object(user_json)) {
+        fprintf(stderr, "get_or_create_user ERROR: Invalid input.\n");
+        return 0;
+    }
+
+    /*
     const char *username = json_string_value(json_object_get(user_json, "username"));
     if (!username || strlen(username) == 0) {
         fprintf(stderr, "get_or_create_user ERROR: 'username' is a required field in the user object.\n");
         return 0; // Username is mandatory for lookup or creation
     }
+    */
 
-    int user_id = 0;
+   const char *username = "Default API User";
+
+    int user_id = 1;
 
     // Check if user already exists
     const char *user_check_sql = "SELECT id FROM users WHERE username = ?;";
@@ -1447,6 +1469,11 @@ int callback_options(const struct _u_request *request, struct _u_response *respo
 
 int main(void) {
     struct _u_instance instance;
+
+    if (init_database() != 0) {
+        fprintf(stderr, "Failed to initialize database\n");
+        return 1;
+    }
     
     if (ulfius_init_instance(&instance, PORT, NULL, NULL) != U_OK) {
         fprintf(stderr, "Error initializing instance\n");
