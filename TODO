@@ -3,3 +3,5 @@ Add validation against n8n schema: https://docs.n8n.io/workflows/templates/#data
 
 Finish tests/nrest-api-test.c:376:test_workflow_detail_endpoint
 Finish tests/nrest-api-test.c:389:test_collection_detail_endpoint
+
+Add Github workflow for test suite
