@@ -22,6 +22,8 @@ sudo apt update && sudo apt install -y \
   libsqlite3-dev
 ```
 
+Optionally, for the test suite, the [Unity](https://github.com/ThrowTheSwitch/Unity) testing framework is used. No Debian package exists, so you may need to compile it yourself.
+
 ## Build
 
 To build the project, run the following command:
@@ -102,6 +104,7 @@ Contributions are welcome. You may want to take a look at the `TODO` file.
 * [Ulfius Web Framework](https://babelouest.github.io/ulfius)
 * [Jansson JSON Library](https://github.com/akheron/jansson)
 * [SQLite](https://sqlite.org)
+* [Unity](https://github.com/ThrowTheSwitch/Unity)
 * [watchexec](https://github.com/watchexec/watchexec)
 
 ---
