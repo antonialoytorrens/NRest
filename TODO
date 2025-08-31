@@ -1,0 +1,3 @@
+See http://json-schema.org/draft-07/schema
+Proper unit testing and integration testing instead of comparing with scripts/test-data.sh manually. I want to use the C89 unity framework for it.
+Add validation against n8n schema: https://docs.n8n.io/workflows/templates/#data-schema
