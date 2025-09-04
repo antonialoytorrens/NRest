@@ -70,7 +70,7 @@ $(LATEST_LINK):
 	fi
 
 # Test build
-$(TEST_TARGET): $(TESTFILES)
+$(TEST_TARGET): $(TESTFILES) setup-mocks
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I$(UNITY_DIR) -o $@ $< $(TEST_LIBS)
 
@@ -82,15 +82,19 @@ release: db $(RELEASE_TARGET)
 	@ln -sf release/nrest-api $(LATEST_LINK)
 	@echo "Release build complete: $(RELEASE_TARGET)"
 
-test-build: $(TEST_TARGET)
-	@echo "Test build complete: $(TEST_TARGET)"
-
 # Run the server
 run: $(LATEST_LINK)
 	@echo "Running NRest API on port $(PORT)..."
 	./$(LATEST_LINK)
 
 # Run tests
+setup-mocks:
+	@echo "Setting up mock data..."
+	./scripts/get-mocks.sh
+
+test-build: $(TEST_TARGET)
+	@echo "Test build complete: $(TEST_TARGET)"
+
 test: test-build
 	@echo "Running test suite..."
 	./$(TEST_TARGET)
@@ -147,4 +151,4 @@ help:
 	@echo "  PORT=$(PORT)      - Server port"
 	@echo "  DATABASE_FILE=$(DATABASE_FILE) - Database file path"
 
-.PHONY: all db debug release run clean clean-all dist test test-build test-upstream test-verbose test-full help
+.PHONY: all db debug release run clean clean-all dist setup-mocks test test-build test-upstream test-verbose test-full help
