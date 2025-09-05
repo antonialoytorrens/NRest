@@ -23,6 +23,7 @@ SRCFILES = nrest-api.c
 TESTFILES = tests/nrest-api-test.c
 
 # Configuration
+CONF_DIR = conf
 PORT ?= 5689
 SQL_FILE = sql/init_database.sql
 DATABASE_FILE ?= workflow_templates.db
@@ -115,7 +116,7 @@ clean-all: clean
 dist:
 	@mkdir -p $(BUILD_DIR)/dist
 	tar -czf $(BUILD_DIR)/dist/nrest-api-latest.tar.gz \
-		$(RELEASE_DIR) README.md sql scripts
+		$(RELEASE_DIR) $(CONF_DIR) README.md sql scripts
 	@echo "Distribution archive created: $(BUILD_DIR)/dist/nrest-api-latest.tar.gz"
 
 # Help target
