@@ -1,4 +1,4 @@
 build
 mock/*.json
 
-workflow_templates.db
+workflow_templates.db*

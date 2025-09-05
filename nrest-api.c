@@ -32,6 +32,7 @@
 #include <ulfius.h>
 #include <sqlite3.h>
 #include <jansson.h>
+#include <pthread.h>
 
 // Default values if not provided by Makefile
 #ifndef PORT
@@ -51,13 +52,22 @@
 #define PARAM_NAME_BUFFER_SIZE 32
 #define SEARCH_PATTERN_BUFFER_SIZE 256
 #define CATEGORY_BUFFER_SIZE 512
+#define MAX_CONNECTIONS 10
 
 // Ulfius framework uses signature methods in order to identify endpoints,
 // mark parameters as unused if necessary
 #define UNUSED(x) (void)(x)
 
-// Global database connection
-sqlite3 *db;
+// Connection pool structure
+typedef struct {
+    sqlite3 *connections[MAX_CONNECTIONS];
+    int available[MAX_CONNECTIONS];
+    pthread_mutex_t mutex;
+    int pool_size;
+} db_pool_t;
+
+// Global connection pool
+static db_pool_t pool = {0};
 
 // Forward declarations
 int callback_options(const struct _u_request *request, struct _u_response *response, void *user_data);
@@ -71,17 +81,105 @@ int callback_create_workflow(const struct _u_request *request, struct _u_respons
 int callback_get_all_workflows(const struct _u_request *request, struct _u_response *response, void *user_data);
 int callback_create_collection(const struct _u_request *request, struct _u_response *response, void *user_data);
 int callback_add_workflow_to_collection(const struct _u_request *request, struct _u_response *response, void *user_data);
+int callback_get_workflow_for_import(const struct _u_request *request, struct _u_response *response, void *user_data);
 
-// Initialize database and create tables with proper schema
+// Initialize connection pool
 int init_database() {
-    int rc = sqlite3_open(DATABASE_FILE, &db);
-    if (rc) {
-        fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
+    if (pthread_mutex_init(&pool.mutex, NULL) != 0) {
+        fprintf(stderr, "Failed to initialize mutex\n");
         return -1;
     }
     
-    printf("Database initialized successfully\n");
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        int rc = sqlite3_open(DATABASE_FILE, &pool.connections[i]);
+        if (rc) {
+            fprintf(stderr, "Can't open database connection %d: %s\n", i, sqlite3_errmsg(pool.connections[i]));
+            // Clean up already opened connections
+            for (int j = 0; j < i; j++) {
+                sqlite3_close(pool.connections[j]);
+            }
+            pthread_mutex_destroy(&pool.mutex);
+            return -1;
+        }
+        
+        // Configure each connection
+        sqlite3_exec(pool.connections[i], "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+        sqlite3_exec(pool.connections[i], "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
+        sqlite3_exec(pool.connections[i], "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
+        sqlite3_exec(pool.connections[i], "PRAGMA cache_size=10000;", NULL, NULL, NULL);
+        sqlite3_exec(pool.connections[i], "PRAGMA temp_store=MEMORY;", NULL, NULL, NULL);
+        
+        pool.available[i] = 1;
+        pool.pool_size++;
+    }
+    
+    printf("Database connection pool initialized successfully with %d connections\n", pool.pool_size);
     return 0;
+}
+
+// Get a connection from the pool
+sqlite3* get_db_connection() {
+    pthread_mutex_lock(&pool.mutex);
+    
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        if (pool.available[i]) {
+            pool.available[i] = 0;
+            pthread_mutex_unlock(&pool.mutex);
+            return pool.connections[i];
+        }
+    }
+    
+    pthread_mutex_unlock(&pool.mutex);
+    
+    // No connections available, fallback to creating a new one
+    sqlite3 *db;
+    int rc = sqlite3_open(DATABASE_FILE, &db);
+    if (rc) {
+        fprintf(stderr, "Fallback connection failed: %s\n", sqlite3_errmsg(db));
+        sqlite3_close(db);
+        return NULL;
+    }
+    
+    sqlite3_exec(db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
+    
+    return db;
+}
+
+// Return a connection to the pool
+void return_db_connection(sqlite3 *db) {
+    if (!db) return;
+    
+    pthread_mutex_lock(&pool.mutex);
+    
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        if (pool.connections[i] == db) {
+            pool.available[i] = 1;
+            pthread_mutex_unlock(&pool.mutex);
+            return;
+        }
+    }
+    
+    pthread_mutex_unlock(&pool.mutex);
+    
+    // This was a fallback connection, close it
+    sqlite3_close(db);
+}
+
+// Clean up the connection pool
+void cleanup_db_pool() {
+    pthread_mutex_lock(&pool.mutex);
+    
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        if (pool.connections[i]) {
+            sqlite3_close(pool.connections[i]);
+            pool.connections[i] = NULL;
+        }
+    }
+    
+    pthread_mutex_unlock(&pool.mutex);
+    pthread_mutex_destroy(&pool.mutex);
 }
 
 // Utility function to parse integer parameter with default
@@ -176,8 +274,8 @@ int get_or_create_user(sqlite3 *db, json_t *user_json) {
 }
 
 // Get or create category if user does not exist
-int get_or_create_category(json_t *category_json) {
-    if (!json_is_object(category_json)) {
+int get_or_create_category(sqlite3 *db, json_t *category_json) {
+    if (!db || !json_is_object(category_json)) {
         return 0;
     }
 
@@ -212,7 +310,7 @@ int get_or_create_category(json_t *category_json) {
     json_t *parent_json = json_object_get(category_json, "parent");
     if (json_is_object(parent_json)) {
         // Recursively call this function to get or create the parent.
-        parent_id = get_or_create_category(parent_json);
+        parent_id = get_or_create_category(db, parent_json);
     }
 
     const char *icon = json_string_value(json_object_get(category_json, "icon"));
@@ -255,7 +353,7 @@ int get_or_create_category(json_t *category_json) {
 }
 
 // Get categories for a template
-json_t* get_template_categories(int template_id) {
+json_t* get_template_categories(sqlite3 *db, int template_id) {
     const char *sql = "SELECT c.id, c.name FROM categories c "
                       "JOIN template_categories tc ON c.id = tc.category_id "
                       "WHERE tc.template_id = ?;";
@@ -276,7 +374,7 @@ json_t* get_template_categories(int template_id) {
 }
 
 // Get categories for a collection
-json_t* get_collection_categories(int collection_id) {
+json_t* get_collection_categories(sqlite3 *db, int collection_id) {
     const char *sql = "SELECT c.id, c.name FROM categories c "
                       "JOIN collection_categories cc ON c.id = cc.category_id "
                       "WHERE cc.collection_id = ?;";
@@ -301,8 +399,16 @@ int callback_get_health(const struct _u_request *request, struct _u_response *re
     UNUSED(request);
     UNUSED(user_data);
 
+    sqlite3 *db = get_db_connection();
+    if (!db) {
+        ulfius_set_string_body_response(response, 500, "Database connection failed");
+        return U_CALLBACK_CONTINUE;
+    }
+
     json_t *health_object = json_object();
     json_object_set_new(health_object, "status", json_string("OK"));
+    
+    return_db_connection(db);
     
     ulfius_set_json_body_response(response, 200, health_object);
     json_decref(health_object);
@@ -315,6 +421,12 @@ int callback_get_categories(const struct _u_request *request, struct _u_response
     UNUSED(request);
     UNUSED(user_data);
 
+    sqlite3 *db = get_db_connection();
+    if (!db) {
+        ulfius_set_string_body_response(response, 500, "Database connection failed");
+        return U_CALLBACK_CONTINUE;
+    }
+
     const char *sql = 
         "SELECT c.id, c.name, c.icon, p.id AS parent_id, p.name AS parent_name, p.icon AS parent_icon "
         "FROM categories c "
@@ -324,6 +436,7 @@ int callback_get_categories(const struct _u_request *request, struct _u_response
     
     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, 0);
     if (rc != SQLITE_OK) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 500, "Database error");
         return U_CALLBACK_CONTINUE;
     }
@@ -349,6 +462,7 @@ int callback_get_categories(const struct _u_request *request, struct _u_response
     }
     
     sqlite3_finalize(stmt);
+    return_db_connection(db);
 
     json_t *response_json = json_object();
     json_object_set_new(response_json, "categories", categories_array);
@@ -362,6 +476,12 @@ int callback_get_categories(const struct _u_request *request, struct _u_response
 // GET /templates/collections
 int callback_get_collections(const struct _u_request *request, struct _u_response *response, void *user_data) {
     UNUSED(user_data);
+    
+    sqlite3 *db = get_db_connection();
+    if (!db) {
+        ulfius_set_string_body_response(response, 500, "Database connection failed");
+        return U_CALLBACK_CONTINUE;
+    }
 
     const char *search_query = u_map_get(request->map_url, "search");
     
@@ -409,6 +529,7 @@ int callback_get_collections(const struct _u_request *request, struct _u_respons
     
     sqlite3_stmt *main_stmt;
     if (sqlite3_prepare_v2(db, main_sql, -1, &main_stmt, 0) != SQLITE_OK) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 500, "Database error on prepare");
         return U_CALLBACK_CONTINUE;
     }
@@ -467,6 +588,7 @@ int callback_get_collections(const struct _u_request *request, struct _u_respons
         json_array_append_new(collections_array, collection_obj);
     }
     sqlite3_finalize(main_stmt);
+    return_db_connection(db);
     
     // Wrap in a root object with "collections" key to match the expected structure
     json_t *response_json = json_object();
@@ -481,8 +603,15 @@ int callback_get_collections(const struct _u_request *request, struct _u_respons
 int callback_get_collection_by_id(const struct _u_request *request, struct _u_response *response, void *user_data) {
     UNUSED(user_data);
 
+    sqlite3 *db = get_db_connection();
+    if (!db) {
+        ulfius_set_string_body_response(response, 500, "Database connection failed");
+        return U_CALLBACK_CONTINUE;
+    }
+
     const char *id_str = u_map_get(request->map_url, "id");
     if (id_str == NULL) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 400, "Missing collection ID");
         return U_CALLBACK_CONTINUE;
     }
@@ -493,14 +622,16 @@ int callback_get_collection_by_id(const struct _u_request *request, struct _u_re
     const char *sql = "SELECT id, name, description, total_views, created_at, rank FROM collections WHERE id = ?;";
     sqlite3_stmt *stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) != SQLITE_OK) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 500, "Database error");
         return U_CALLBACK_CONTINUE;
     }
     
     sqlite3_bind_int(stmt, 1, collection_id);
     
+    json_t *root_obj = NULL;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
-        json_t *root_obj = json_object();
+        root_obj = json_object();
         json_t *collection_obj = json_object();
         json_error_t error;
         
@@ -622,7 +753,7 @@ int callback_get_collection_by_id(const struct _u_request *request, struct _u_re
                 }
                 
                 // Get categories for this workflow
-                json_object_set_new(workflow_obj, "categories", get_template_categories(template_id));
+                json_object_set_new(workflow_obj, "categories", get_template_categories(db, template_id));
                 
                 // Add image array
                 const char *image_str = (const char*)sqlite3_column_text(workflow_stmt, 17);
@@ -642,7 +773,7 @@ int callback_get_collection_by_id(const struct _u_request *request, struct _u_re
         json_object_set_new(collection_obj, "nodes", json_array());
         
         // Get categories for the collection
-        json_object_set_new(collection_obj, "categories", get_collection_categories(collection_id));
+        json_object_set_new(collection_obj, "categories", get_collection_categories(db, collection_id));
         
         // Add empty image array for collection
         json_object_set_new(collection_obj, "image", json_array());
@@ -656,13 +787,20 @@ int callback_get_collection_by_id(const struct _u_request *request, struct _u_re
         ulfius_set_string_body_response(response, 404, "Collection not found");
         sqlite3_finalize(stmt);
     }
-    
+
+    return_db_connection(db);
     return U_CALLBACK_CONTINUE;
 }
 
 // GET /templates/search
 int callback_search_templates(const struct _u_request *request, struct _u_response *response, void *user_data) {
     UNUSED(user_data);
+
+    sqlite3 *db = get_db_connection();
+    if (!db) {
+        ulfius_set_string_body_response(response, 500, "Database connection failed");
+        return U_CALLBACK_CONTINUE;
+    }
 
     const char *search_query_str = u_map_get(request->map_url, "search");
     const char *category_str = u_map_get(request->map_url, "category");
@@ -774,12 +912,14 @@ int callback_search_templates(const struct _u_request *request, struct _u_respon
         }
         sqlite3_finalize(count_stmt);
     } else {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 500, "Database error on count query");
         return U_CALLBACK_CONTINUE;
     }
 
     // Get paginated results
     if (sqlite3_prepare_v2(db, full_main_sql, -1, &main_stmt, 0) != SQLITE_OK) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 500, "Database error on main query");
         return U_CALLBACK_CONTINUE;
     }
@@ -859,7 +999,8 @@ int callback_search_templates(const struct _u_request *request, struct _u_respon
     }
 
     sqlite3_finalize(main_stmt);
-    
+    return_db_connection(db);
+
     json_object_set_new(response_json, "workflows", workflows_array);
     ulfius_set_json_body_response(response, 200, response_json);
     json_decref(response_json);
@@ -872,10 +1013,17 @@ int callback_get_all_workflows(const struct _u_request *request, struct _u_respo
     UNUSED(request);
     UNUSED(user_data);
 
+    sqlite3 *db = get_db_connection();
+    if (!db) {
+        ulfius_set_string_body_response(response, 500, "Database connection failed");
+        return U_CALLBACK_CONTINUE;
+    }
+
     const char *sql = "SELECT id, name, total_views FROM templates;";
     sqlite3_stmt *stmt;
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) != SQLITE_OK) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 500, "Database error");
         return U_CALLBACK_CONTINUE;
     }
@@ -889,6 +1037,7 @@ int callback_get_all_workflows(const struct _u_request *request, struct _u_respo
         json_array_append_new(workflows_array, workflow_obj);
     }
     sqlite3_finalize(stmt);
+    return_db_connection(db);
 
     ulfius_set_json_body_response(response, 200, workflows_array);
     json_decref(workflows_array);
@@ -900,8 +1049,15 @@ int callback_get_all_workflows(const struct _u_request *request, struct _u_respo
 int callback_get_workflow_by_id(const struct _u_request *request, struct _u_response *response, void *user_data) {
     UNUSED(user_data);
 
+    sqlite3 *db = get_db_connection();
+    if (!db) {
+        ulfius_set_string_body_response(response, 500, "Database connection failed");
+        return U_CALLBACK_CONTINUE;
+    }
+
     const char *id_str = u_map_get(request->map_url, "id");
     if (id_str == NULL) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 400, "Missing workflow ID");
         return U_CALLBACK_CONTINUE;
     }
@@ -917,6 +1073,7 @@ int callback_get_workflow_by_id(const struct _u_request *request, struct _u_resp
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, 0);
     if (rc != SQLITE_OK) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 500, "Database error preparing statement");
         return U_CALLBACK_CONTINUE;
     }
@@ -924,8 +1081,10 @@ int callback_get_workflow_by_id(const struct _u_request *request, struct _u_resp
     sqlite3_bind_int(stmt, 1, template_id);
     
     rc = sqlite3_step(stmt);
+    json_t *root_obj = NULL;
+
     if (rc == SQLITE_ROW) {
-        json_t *root_obj = json_object();
+        root_obj = json_object();
         json_error_t error;
         
         // Build the nested "workflow" object exactly like the API
@@ -998,7 +1157,7 @@ int callback_get_workflow_by_id(const struct _u_request *request, struct _u_resp
         json_object_set_new(root_obj, "user", user_obj);
         
         // Get categories
-        json_object_set_new(root_obj, "categories", get_template_categories(template_id));
+        json_object_set_new(root_obj, "categories", get_template_categories(db, template_id));
         
         // Add workflowInfo from stored JSON
         const char *workflow_info_str = (const char*)sqlite3_column_text(stmt, 9);
@@ -1049,6 +1208,7 @@ int callback_get_workflow_by_id(const struct _u_request *request, struct _u_resp
     }
     
     sqlite3_finalize(stmt);
+    return_db_connection(db);
     return U_CALLBACK_CONTINUE;
 }
 
@@ -1057,8 +1217,15 @@ int callback_get_workflow_by_id(const struct _u_request *request, struct _u_resp
 int callback_get_workflow_for_import(const struct _u_request *request, struct _u_response *response, void *user_data) {
     UNUSED(user_data);
 
+    sqlite3 *db = get_db_connection();
+    if (!db) {
+        ulfius_set_string_body_response(response, 500, "Database connection failed");
+        return U_CALLBACK_CONTINUE;
+    }
+
     const char *id_str = u_map_get(request->map_url, "id");
     if (id_str == NULL) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 400, "Missing workflow ID");
         return U_CALLBACK_CONTINUE;
     }
@@ -1068,6 +1235,7 @@ int callback_get_workflow_for_import(const struct _u_request *request, struct _u
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, 0);
     if (rc != SQLITE_OK) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 500, "Database error preparing statement");
         return U_CALLBACK_CONTINUE;
     }
@@ -1075,8 +1243,10 @@ int callback_get_workflow_for_import(const struct _u_request *request, struct _u
     sqlite3_bind_int(stmt, 1, template_id);
 
     rc = sqlite3_step(stmt);
+    json_t *root_obj = NULL;
+
     if (rc == SQLITE_ROW) {
-        json_t *root_obj = json_object();
+        root_obj = json_object();
         json_error_t error;
 
         // Set top-level id and name
@@ -1109,6 +1279,7 @@ int callback_get_workflow_for_import(const struct _u_request *request, struct _u
     }
 
     sqlite3_finalize(stmt);
+    return_db_connection(db);
     return U_CALLBACK_CONTINUE;
 }
 
@@ -1116,8 +1287,15 @@ int callback_get_workflow_for_import(const struct _u_request *request, struct _u
 int callback_create_workflow(const struct _u_request *request, struct _u_response *response, void *user_data) {
     UNUSED(user_data);
 
+    sqlite3 *db = get_db_connection();
+    if (!db) {
+        ulfius_set_string_body_response(response, 500, "Database connection failed");
+        return U_CALLBACK_CONTINUE;
+    }
+
     json_t *json_body = ulfius_get_json_body_request(request, NULL);
     if (json_body == NULL) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 400, "Invalid JSON");
         return U_CALLBACK_CONTINUE;
     }
@@ -1131,6 +1309,7 @@ int callback_create_workflow(const struct _u_request *request, struct _u_respons
 
     if (!json_is_object(workflow_json) || !json_is_object(user_json)) {
         json_decref(json_body);
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 400, "Missing 'workflow' or 'user' object in request body");
         return U_CALLBACK_CONTINUE;
     }
@@ -1149,6 +1328,7 @@ int callback_create_workflow(const struct _u_request *request, struct _u_respons
 
     if (!name || !description || !created_at || !nested_workflow) {
         json_decref(json_body);
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 400, "Missing required fields in workflow object");
         return U_CALLBACK_CONTINUE;
     }
@@ -1157,6 +1337,7 @@ int callback_create_workflow(const struct _u_request *request, struct _u_respons
     int user_id = get_or_create_user(db, user_json);
     if (user_id == 0) {
         json_decref(json_body);
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 400, "Invalid or incomplete user object provided. 'username' is required.");
         return U_CALLBACK_CONTINUE;
     }
@@ -1181,6 +1362,7 @@ int callback_create_workflow(const struct _u_request *request, struct _u_respons
         if (workflow_info_str) free(workflow_info_str);
         if (nodes_data_str) free(nodes_data_str);
         if (image_data_str) free(image_data_str);
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 500, "Database error on prepare");
         return U_CALLBACK_CONTINUE;
     }
@@ -1242,7 +1424,7 @@ int callback_create_workflow(const struct _u_request *request, struct _u_respons
             size_t index;
             json_t *category_json_obj;
             json_array_foreach(categories_json, index, category_json_obj) {
-                int category_id = get_or_create_category(category_json_obj);
+                int category_id = get_or_create_category(db, category_json_obj);
                 if (category_id > 0) {
                     const char *link_sql = "INSERT OR IGNORE INTO template_categories (template_id, category_id) VALUES (?, ?);";
                     sqlite3_stmt *link_stmt;
@@ -1275,6 +1457,7 @@ int callback_create_workflow(const struct _u_request *request, struct _u_respons
     if (nodes_data_str) free(nodes_data_str);
     if (image_data_str) free(image_data_str);
     
+    return_db_connection(db);
     return U_CALLBACK_CONTINUE;
 }
 
@@ -1282,8 +1465,15 @@ int callback_create_workflow(const struct _u_request *request, struct _u_respons
 int callback_create_collection(const struct _u_request *request, struct _u_response *response, void *user_data) {
     UNUSED(user_data);
 
+    sqlite3 *db = get_db_connection();
+    if (!db) {
+        ulfius_set_string_body_response(response, 500, "Database connection failed");
+        return U_CALLBACK_CONTINUE;
+    }
+
     json_t *json_body = ulfius_get_json_body_request(request, NULL);
     if (json_body == NULL) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 400, "Invalid JSON");
         return U_CALLBACK_CONTINUE;
     }
@@ -1295,6 +1485,7 @@ int callback_create_collection(const struct _u_request *request, struct _u_respo
 
     if (!name || strlen(name) == 0) {
         json_decref(json_body);
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 400, "Missing required field: name");
         return U_CALLBACK_CONTINUE;
     }
@@ -1302,6 +1493,7 @@ int callback_create_collection(const struct _u_request *request, struct _u_respo
     const char *created_at = json_string_value(json_object_get(json_body, "createdAt"));
     if (!created_at) {
         json_decref(json_body);
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 400, "Missing required field: createdAt");
         return U_CALLBACK_CONTINUE;
     }
@@ -1312,6 +1504,7 @@ int callback_create_collection(const struct _u_request *request, struct _u_respo
     
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) != SQLITE_OK) {
         json_decref(json_body);
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 500, "Database error on prepare");
         return U_CALLBACK_CONTINUE;
     }
@@ -1375,6 +1568,7 @@ int callback_create_collection(const struct _u_request *request, struct _u_respo
     }
     
     json_decref(json_body);
+    return_db_connection(db);
     return U_CALLBACK_CONTINUE;
 }
 
@@ -1382,8 +1576,15 @@ int callback_create_collection(const struct _u_request *request, struct _u_respo
 int callback_add_workflow_to_collection(const struct _u_request *request, struct _u_response *response, void *user_data) {
     UNUSED(user_data);
 
+    sqlite3 *db = get_db_connection();
+    if (!db) {
+        ulfius_set_string_body_response(response, 500, "Database connection failed");
+        return U_CALLBACK_CONTINUE;
+    }
+
     json_t *json_body = ulfius_get_json_body_request(request, NULL);
     if (json_body == NULL) {
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 400, "Invalid JSON");
         return U_CALLBACK_CONTINUE;
     }
@@ -1393,6 +1594,7 @@ int callback_add_workflow_to_collection(const struct _u_request *request, struct
 
     if (!json_is_integer(collection_id_json) || !json_is_integer(template_id_json)) {
         json_decref(json_body);
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 400, "Missing required fields: collectionId and templateId must be integers");
         return U_CALLBACK_CONTINUE;
     }
@@ -1408,6 +1610,7 @@ int callback_add_workflow_to_collection(const struct _u_request *request, struct
         if (sqlite3_step(check_stmt) != SQLITE_ROW) {
             sqlite3_finalize(check_stmt);
             json_decref(json_body);
+            return_db_connection(db);
             ulfius_set_string_body_response(response, 404, "Collection not found");
             return U_CALLBACK_CONTINUE;
         }
@@ -1421,6 +1624,7 @@ int callback_add_workflow_to_collection(const struct _u_request *request, struct
         if (sqlite3_step(check_stmt) != SQLITE_ROW) {
             sqlite3_finalize(check_stmt);
             json_decref(json_body);
+            return_db_connection(db);
             ulfius_set_string_body_response(response, 404, "Template not found");
             return U_CALLBACK_CONTINUE;
         }
@@ -1433,6 +1637,7 @@ int callback_add_workflow_to_collection(const struct _u_request *request, struct
     
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) != SQLITE_OK) {
         json_decref(json_body);
+        return_db_connection(db);
         ulfius_set_string_body_response(response, 500, "Database error on prepare");
         return U_CALLBACK_CONTINUE;
     }
@@ -1447,23 +1652,21 @@ int callback_add_workflow_to_collection(const struct _u_request *request, struct
         json_t *response_json = json_object();
         if (changes > 0) {
             json_object_set_new(response_json, "message", json_string("Workflow added to collection successfully"));
-            json_object_set_new(response_json, "collectionId", json_integer(collection_id));
-            json_object_set_new(response_json, "templateId", json_integer(template_id));
-            ulfius_set_json_body_response(response, 200, response_json);
         } else {
             json_object_set_new(response_json, "message", json_string("Workflow already exists in collection"));
-            json_object_set_new(response_json, "collectionId", json_integer(collection_id));
-            json_object_set_new(response_json, "templateId", json_integer(template_id));
-            ulfius_set_json_body_response(response, 200, response_json);
         }
+        json_object_set_new(response_json, "collectionId", json_integer(collection_id));
+        json_object_set_new(response_json, "templateId", json_integer(template_id));
+        ulfius_set_json_body_response(response, 200, response_json);
         json_decref(response_json);
     } else {
         sqlite3_finalize(stmt);
-        ulfius_set_string_body_response(response, 500, "Failed to add workflow to collection");
         fprintf(stderr, "callback_add_workflow_to_collection ERROR: Failed to add workflow to collection: %s\n", sqlite3_errmsg(db));
+        ulfius_set_string_body_response(response, 500, "Failed to add workflow to collection");
     }
     
     json_decref(json_body);
+    return_db_connection(db);
     return U_CALLBACK_CONTINUE;
 }
 
@@ -1481,13 +1684,13 @@ int main(void) {
     struct _u_instance instance;
 
     if (init_database() != 0) {
-        fprintf(stderr, "Failed to initialize database\n");
+        fprintf(stderr, "Failed to initialize database connection pool\n");
         return 1;
     }
     
     if (ulfius_init_instance(&instance, PORT, NULL, NULL) != U_OK) {
         fprintf(stderr, "Error initializing instance\n");
-        sqlite3_close(db);
+        cleanup_db_pool();
         return 1;
     }
     
@@ -1519,7 +1722,7 @@ int main(void) {
     
     if (ulfius_start_framework(&instance) == U_OK) {
         printf("n8n Templates API server started on port %d\n", PORT);
-        printf("Using database file %s\n", DATABASE_FILE);
+        printf("Using database file %s with connection pool of %d connections\n", DATABASE_FILE, MAX_CONNECTIONS);
         printf("Available endpoints:\n");
         printf("  GET    /health                         - API health status\n");
         printf("  GET    /templates/categories           - Get all categories\n");
@@ -1542,7 +1745,7 @@ int main(void) {
     printf("Shutting down...\n");
     ulfius_stop_framework(&instance);
     ulfius_clean_instance(&instance);
-    sqlite3_close(db);
-    
+    cleanup_db_pool();
+
     return 0;
 }
