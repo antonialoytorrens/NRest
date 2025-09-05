@@ -42,6 +42,16 @@
 #define DATABASE_FILE "workflow_templates.db"
 #endif
 
+// Buffer size constants to replace magic numbers
+#define MAX_SQL_BUFFER_SIZE 4096
+#define MEDIUM_SQL_BUFFER_SIZE 3072
+#define SMALL_SQL_BUFFER_SIZE 2048
+#define XSMALL_SQL_BUFFER_SIZE 1024
+#define MAX_CATEGORIES 50
+#define PARAM_NAME_BUFFER_SIZE 32
+#define SEARCH_PATTERN_BUFFER_SIZE 256
+#define CATEGORY_BUFFER_SIZE 512
+
 // Ulfius framework uses signature methods in order to identify endpoints,
 // mark parameters as unused if necessary
 #define UNUSED(x) (void)(x)
@@ -356,10 +366,10 @@ int callback_get_collections(const struct _u_request *request, struct _u_respons
     const char *search_query = u_map_get(request->map_url, "search");
     
     // Parse category parameters (category[] array)
-    int category_ids[50];
+    int category_ids[MAX_CATEGORIES];
     int category_count = 0;
-    char param_name[32];
-    for (int i = 0; i < 50; i++) {
+    char param_name[PARAM_NAME_BUFFER_SIZE];
+    for (int i = 0; i < MAX_CATEGORIES; i++) {
         snprintf(param_name, sizeof(param_name), "category[%d]", i);
         const char *value = u_map_get(request->map_url, param_name);
         if (value) {
@@ -368,7 +378,7 @@ int callback_get_collections(const struct _u_request *request, struct _u_respons
     }
     
     // Build dynamic SQL query
-    char main_sql[2048];
+    char main_sql[SMALL_SQL_BUFFER_SIZE];
     strcpy(main_sql, "SELECT DISTINCT c.id, c.rank, c.name, c.description, c.total_views, c.created_at FROM collections c");
     
     int where_added = 0;
@@ -412,7 +422,7 @@ int callback_get_collections(const struct _u_request *request, struct _u_respons
     
     // Bind search parameter
     if (search_query && strlen(search_query) > 0) {
-        char search_pattern[256];
+        char search_pattern[SEARCH_PATTERN_BUFFER_SIZE];
         snprintf(search_pattern, sizeof(search_pattern), "%%%s%%", search_query);
         sqlite3_bind_text(main_stmt, param_idx++, search_pattern, -1, SQLITE_STATIC);
     }
@@ -675,14 +685,14 @@ int callback_search_templates(const struct _u_request *request, struct _u_respon
                            "FROM templates t JOIN users u ON t.user_id = u.id";
     
     // Build WHERE clause and JOIN clause dynamically
-    char join_clause[512] = "";
-    char where_clause[1024] = "";
+    char join_clause[CATEGORY_BUFFER_SIZE] = "";
+    char where_clause[XSMALL_SQL_BUFFER_SIZE] = "";
     int where_conditions = 0;
     
     // Parse and prepare category conditions
-    char *categories[50]; // Max 50 categories, just to be sure
+    char *categories[MAX_CATEGORIES]; // Max 50 categories, just to be sure
     int category_count = 0;
-    char category_buffer[512];
+    char category_buffer[CATEGORY_BUFFER_SIZE];
     
     if (category_str && strlen(category_str) > 0) {
         // Create a copy of category_str for tokenization
@@ -691,7 +701,7 @@ int callback_search_templates(const struct _u_request *request, struct _u_respon
         
         // Split by comma
         char *token = strtok(category_buffer, ",");
-        while (token != NULL && category_count < 50) {
+        while (token != NULL && category_count < MAX_CATEGORIES) {
             // Trim whitespace
             while (*token == ' ') token++;
             char *end = token + strlen(token) - 1;
@@ -736,10 +746,10 @@ int callback_search_templates(const struct _u_request *request, struct _u_respon
         where_conditions++;
     }
 
-    char full_count_sql[3072];
+    char full_count_sql[MEDIUM_SQL_BUFFER_SIZE];
     snprintf(full_count_sql, sizeof(full_count_sql), "%s%s%s;", count_sql_base, join_clause, where_clause);
     
-    char full_main_sql[4096];
+    char full_main_sql[MAX_SQL_BUFFER_SIZE];
     snprintf(full_main_sql, sizeof(full_main_sql), "%s%s%s ORDER BY t.id DESC LIMIT ? OFFSET ?;", main_sql_base, join_clause, where_clause);
     
     // Get total count
@@ -753,7 +763,7 @@ int callback_search_templates(const struct _u_request *request, struct _u_respon
         
         // Bind search parameters
         if (search_query_str && strlen(search_query_str) > 0) {
-            char search_pattern[256];
+            char search_pattern[SEARCH_PATTERN_BUFFER_SIZE];
             snprintf(search_pattern, sizeof(search_pattern), "%%%s%%", search_query_str);
             sqlite3_bind_text(count_stmt, param_index++, search_pattern, -1, SQLITE_STATIC);
             sqlite3_bind_text(count_stmt, param_index++, search_pattern, -1, SQLITE_STATIC);
@@ -783,7 +793,7 @@ int callback_search_templates(const struct _u_request *request, struct _u_respon
     
     // Bind search parameters
     if (search_query_str && strlen(search_query_str) > 0) {
-        char search_pattern[256];
+        char search_pattern[SEARCH_PATTERN_BUFFER_SIZE];
         snprintf(search_pattern, sizeof(search_pattern), "%%%s%%", search_query_str);
         sqlite3_bind_text(main_stmt, param_index++, search_pattern, -1, SQLITE_STATIC);
         sqlite3_bind_text(main_stmt, param_index++, search_pattern, -1, SQLITE_STATIC);
