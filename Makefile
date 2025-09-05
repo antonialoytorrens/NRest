@@ -23,7 +23,7 @@ SRCFILES = nrest-api.c
 TESTFILES = tests/nrest-api-test.c
 
 # Configuration
-PORT ?= 5679
+PORT ?= 5689
 SQL_FILE = sql/init_database.sql
 DATABASE_FILE ?= workflow_templates.db
 DEFINES = -DPORT=$(PORT) -DDATABASE_FILE=\"$(DATABASE_FILE)\"
@@ -115,10 +115,7 @@ clean-all: clean
 dist:
 	@mkdir -p $(BUILD_DIR)/dist
 	tar -czf $(BUILD_DIR)/dist/nrest-api-latest.tar.gz \
-		Makefile $(RELEASE_DIR) $(SRCFILES) $(TESTFILES) \
-		README.md sql scripts mock TODO 2>/dev/null || \
-	tar -czf $(BUILD_DIR)/dist/nrest-api-latest.tar.gz \
-		Makefile $(SRCFILES) $(TESTFILES) README.md 2>/dev/null
+		$(RELEASE_DIR) README.md sql scripts
 	@echo "Distribution archive created: $(BUILD_DIR)/dist/nrest-api-latest.tar.gz"
 
 # Help target
