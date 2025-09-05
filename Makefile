@@ -23,7 +23,7 @@ SRCFILES = nrest-api.c
 TESTFILES = tests/nrest-api-test.c
 
 # Configuration
-PORT ?= 8080
+PORT ?= 5679
 SQL_FILE = sql/init_database.sql
 DATABASE_FILE ?= workflow_templates.db
 DEFINES = -DPORT=$(PORT) -DDATABASE_FILE=\"$(DATABASE_FILE)\"
