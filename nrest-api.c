@@ -1531,8 +1531,10 @@ int main(void) {
         printf("  PUT    /templates/workflows            - Create new workflow\n");
         printf("  PUT    /templates/collections          - Create new collection of workflows\n");
         printf("  PATCH  /templates/collections          - Insert new template workflow into a collection\n");
-        printf("Press Enter to quit...\n");
-        getchar();
+        printf("Press Ctrl+C to quit...\n");
+
+        // Wait forever until signal (SIGINT/SIGTERM)
+        pause();
     } else {
         fprintf(stderr, "Error starting framework\n");
     }

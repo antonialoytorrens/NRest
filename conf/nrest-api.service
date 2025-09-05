@@ -9,12 +9,13 @@ User=www-data
 Group=www-data
 WorkingDirectory=/opt/workflow-templates
 ExecStart=/opt/workflow-templates/nrest-api
-Environment="PORT=8080"
+Environment="PORT=5680"
 Environment="DATABASE_FILE=/opt/workflow-templates/workflow_templates.db"
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
+KillSignal=SIGTERM
 
 # Security hardening
 PrivateTmp=true
