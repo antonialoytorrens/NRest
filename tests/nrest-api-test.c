@@ -160,13 +160,26 @@ static json_t* http_get(const char *url) {
     json_error_t error;
     json_t *json = NULL;
     
+    // Set up headers
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "User-Agent: Mozilla/5.0 (compatible; nrest-api-test/1.0)");
+    headers = curl_slist_append(headers, "Accept: application/json");
+    headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.9");
+    headers = curl_slist_append(headers, "Cache-Control: no-cache");
+    
     curl_easy_setopt(g_config.curl, CURLOPT_URL, url);
     curl_easy_setopt(g_config.curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(g_config.curl, CURLOPT_WRITEDATA, (void *)&response);
     curl_easy_setopt(g_config.curl, CURLOPT_TIMEOUT, HTTP_TIMEOUT_SECONDS);
     curl_easy_setopt(g_config.curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(g_config.curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(g_config.curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(g_config.curl, CURLOPT_SSL_VERIFYHOST, 2L);
     
     res = curl_easy_perform(g_config.curl);
+    
+    // Clean up headers
+    curl_slist_free_all(headers);
     
     if (res != CURLE_OK) {
         if (g_config.verbose_mode) {
@@ -183,6 +196,9 @@ static json_t* http_get(const char *url) {
             }
         } else if (g_config.verbose_mode) {
             fprintf(stderr, "HTTP %ld for %s\n", http_code, url);
+            if (response.data && strlen(response.data) > 0) {
+                fprintf(stderr, "Response body: %s\n", response.data);
+            }
         }
     }
     
