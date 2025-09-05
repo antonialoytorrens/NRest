@@ -96,6 +96,7 @@ run: $(LATEST_LINK)
 setup-mocks:
 	@echo "Setting up mock data..."
 	PORT=$(PORT) ./scripts/get-mocks.sh
+	PORT=$(PORT) ./scripts/insert-data.sh
 
 # Run tests
 test: setup-mocks $(TEST_TARGET)
