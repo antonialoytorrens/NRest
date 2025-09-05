@@ -5,3 +5,4 @@ Finish tests/nrest-api-test.c:376:test_workflow_detail_endpoint
 Finish tests/nrest-api-test.c:389:test_collection_detail_endpoint
 
 Add Github workflow for test suite
+When starting the service, the database gets loaded into memory and new changes are not refreshed in n8n
