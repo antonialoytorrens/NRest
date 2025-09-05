@@ -115,7 +115,7 @@ clean-all: clean
 dist:
 	@mkdir -p $(BUILD_DIR)/dist
 	tar -czf $(BUILD_DIR)/dist/nrest-api-latest.tar.gz \
-		Makefile $(SRCFILES) $(TESTFILES) \
+		Makefile $(RELEASE_DIR) $(SRCFILES) $(TESTFILES) \
 		README.md sql scripts mock TODO 2>/dev/null || \
 	tar -czf $(BUILD_DIR)/dist/nrest-api-latest.tar.gz \
 		Makefile $(SRCFILES) $(TESTFILES) README.md 2>/dev/null
