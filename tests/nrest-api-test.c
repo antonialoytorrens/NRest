@@ -37,8 +37,12 @@
 #include <unistd.h>
 #include <unity.h>
 
+// Default values if not provided by Makefile
+#ifndef PORT
+#define PORT 8080
+#endif
+
 // Configuration constants
-#define LOCAL_BASE_URL "http://localhost:8080"
 #define UPSTREAM_BASE_URL "https://api.n8n.io"
 #define MAX_RESPONSE_SIZE 1048576  // 1MB
 #define HTTP_TIMEOUT_SECONDS 10L
@@ -110,6 +114,13 @@ static void free_response_buffer(response_buffer_t *buf) {
         buf->data = NULL;
     }
     buf->size = 0;
+}
+
+// Function to get local base URL
+static char* get_local_base_url(void) {
+    static char local_url[64];
+    snprintf(local_url, sizeof(local_url), "http://127.0.0.1:%d", PORT);
+    return local_url;
 }
 
 // Write callback for CURL
@@ -269,7 +280,7 @@ static void test_endpoint_schema_impl(const test_endpoint_t *endpoint) {
     char diff_buffer[DIFF_BUFFER_SIZE] = {0};
     
     // Build URLs
-    build_url(local_url, sizeof(local_url), LOCAL_BASE_URL, endpoint->path, endpoint->params);
+    build_url(local_url, sizeof(local_url), get_local_base_url(), endpoint->path, endpoint->params);
     build_url(upstream_url, sizeof(upstream_url), UPSTREAM_BASE_URL, endpoint->path, endpoint->params);
     
     // Get local response
@@ -312,7 +323,7 @@ static void test_endpoint_schema_impl(const test_endpoint_t *endpoint) {
 // Fetch first item ID from an endpoint
 static int get_first_item_id(const char *endpoint_path, const char *array_field) {
     char url[MAX_URL_LENGTH];
-    snprintf(url, sizeof(url), "%s%s?limit=%d", LOCAL_BASE_URL, endpoint_path, SINGLE_RESULT_LIMIT);
+    snprintf(url, sizeof(url), "%s%s?limit=%d", get_local_base_url(), endpoint_path, SINGLE_RESULT_LIMIT);
     
     json_t *result = http_get(url);
     int item_id = 0;
@@ -370,7 +381,7 @@ void test_workflow_detail_endpoint(void) {
     int workflow_id = get_first_item_id(ENDPOINT_SEARCH, FIELD_WORKFLOWS);
     
     if (workflow_id > 0) {
-        char endpoint_path[256];
+        char endpoint_path[ENDPOINT_PATH_BUFFER_SIZE];
         snprintf(endpoint_path, sizeof(endpoint_path), "%s/%d", ENDPOINT_WORKFLOWS, workflow_id);
         test_endpoint_t endpoint = {endpoint_path, NULL, "Workflow detail"};
         test_endpoint_schema_impl(&endpoint);
@@ -386,7 +397,7 @@ void test_collection_detail_endpoint(void) {
     int collection_id = get_first_item_id(ENDPOINT_COLLECTIONS, FIELD_COLLECTIONS);
     
     if (collection_id > 0) {
-        char endpoint_path[256];
+        char endpoint_path[ENDPOINT_PATH_BUFFER_SIZE];
         snprintf(endpoint_path, sizeof(endpoint_path), "%s/%d", ENDPOINT_COLLECTIONS, collection_id);
         test_endpoint_t endpoint = {endpoint_path, NULL, "Collection detail"};
         test_endpoint_schema_impl(&endpoint);
@@ -398,7 +409,7 @@ void test_collection_detail_endpoint(void) {
 
 void test_workflow_field_types(void) {
     char url[MAX_URL_LENGTH];
-    snprintf(url, sizeof(url), "%s%s?limit=%d", LOCAL_BASE_URL, ENDPOINT_SEARCH, SINGLE_RESULT_LIMIT);
+    snprintf(url, sizeof(url), "%s%s?limit=%d", get_local_base_url(), ENDPOINT_SEARCH, SINGLE_RESULT_LIMIT);
     json_t *result = http_get(url);
     
     TEST_ASSERT_NOT_NULL(result);
@@ -489,8 +500,8 @@ int main(int argc, char *argv[]) {
     }
     
     // Wait for local server
-    printf("Waiting for local server at %s...\n", LOCAL_BASE_URL);
-    if (!wait_for_server(LOCAL_BASE_URL, SERVER_WAIT_TIMEOUT)) {
+    printf("Waiting for local server at %s...\n", get_local_base_url());
+    if (!wait_for_server(get_local_base_url(), SERVER_WAIT_TIMEOUT)) {
         fprintf(stderr, "Local server not responding. Please start nrest-api first.\n");
         curl_easy_cleanup(g_config.curl);
         curl_global_cleanup();

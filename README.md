@@ -50,6 +50,11 @@ To run the project, regardless of the build mode:
 make run
 ```
 
+To test the project, regardless of the build mode:
+```sh
+make test
+```
+
 ## Usage
 
 The following endpoints are implemented:
@@ -88,7 +93,7 @@ curl http://localhost:8080/workflows
 ## Samples
 The following samples are provided:
 * **Database samples**: You may want to run `scripts/test-data.sh` while the REST API server is running in order to insert custom sample data.
-* **Unit testing samples (from upstream)**: You may want to look at the mock directory. `627X` are sample workflows and `6270_imported.json` is used for testing the internal endpoint. `n8n-api-collections.json` is used for checking collection JSON structure.
+* **Unit testing samples (from upstream)**: You may want to look at the mock directory (you may need to run `make setup-mocks` first). `627X` are sample workflows and `6270_imported.json` is used for testing the internal endpoint. `n8n-api-collections.json` is used for checking collection JSON structure.
 * **Configuration samples**: An NGINX and systemd sample configuration files are provided in the conf folder. You may want to replace @SERVER_NAME@ by your REST API server name and @N8N_SERVER_NAME@ by your N8N server name. Certbot must also be installed and configured in your server.
 
 ## License

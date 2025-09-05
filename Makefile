@@ -46,8 +46,12 @@ all: db debug
 db:
 	@if [ ! -f $(DATABASE_FILE) ]; then \
 		echo "Creating database schemas..."; \
-		touch $(DATABASE_FILE); \
-		sqlite3 $(DATABASE_FILE) < $(SQL_FILE); \
+		if [ -f $(SQL_FILE) ]; then \
+			sqlite3 $(DATABASE_FILE) < $(SQL_FILE); \
+		else \
+			echo "Error: $(SQL_FILE) not found"; \
+			exit 1; \
+		fi; \
 	else \
 		echo "Database already exists: $(DATABASE_FILE)"; \
 	fi
@@ -55,7 +59,7 @@ db:
 # Debug build with sanitizers
 $(DEBUG_TARGET): $(SRCFILES)
 	@mkdir -p $(DEBUG_DIR)
-	$(CC) $(CFLAGS) -g3 -Werror -fsanitize=address,undefined,leak $(DEFINES) $< -o $@ $(LDFLAGS) -lasan -lubsan
+	$(CC) $(CFLAGS) -g3 -Werror -fsanitize=address,undefined,leak $(DEFINES) $< -o $@ $(LDFLAGS)
 
 # Release build with optimizations
 $(RELEASE_TARGET): $(SRCFILES)
@@ -70,9 +74,9 @@ $(LATEST_LINK):
 	fi
 
 # Test build
-$(TEST_TARGET): $(TESTFILES) setup-mocks
+$(TEST_TARGET): $(TESTFILES)
 	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -I$(UNITY_DIR) -o $@ $< $(TEST_LIBS)
+	$(CC) $(CFLAGS) $(DEFINES) -I$(UNITY_DIR) -o $@ $< $(TEST_LIBS)
 
 debug: db $(DEBUG_TARGET)
 	@ln -sf debug/nrest-api $(LATEST_LINK)
@@ -87,28 +91,14 @@ run: $(LATEST_LINK)
 	@echo "Running NRest API on port $(PORT)..."
 	./$(LATEST_LINK)
 
-# Run tests
+# Set up mock data
 setup-mocks:
 	@echo "Setting up mock data..."
 	./scripts/get-mocks.sh
 
-test-build: $(TEST_TARGET)
-	@echo "Test build complete: $(TEST_TARGET)"
-
-test: test-build
+# Run tests
+test: setup-mocks $(TEST_TARGET)
 	@echo "Running test suite..."
-	./$(TEST_TARGET)
-
-test-upstream: test-build
-	@echo "Running test suite with upstream comparison..."
-	./$(TEST_TARGET) --upstream
-
-test-verbose: test-build
-	@echo "Running test suite (verbose)..."
-	./$(TEST_TARGET) --verbose
-
-test-full: test-build
-	@echo "Running full test suite (upstream + verbose)..."
 	./$(TEST_TARGET) --upstream --verbose
 
 # Clean build artifacts
@@ -125,10 +115,10 @@ clean-all: clean
 dist:
 	@mkdir -p $(BUILD_DIR)/dist
 	tar -czf $(BUILD_DIR)/dist/nrest-api-latest.tar.gz \
-		Makefile nrest-api.c test_nrest_api.c \
+		Makefile $(SRCFILES) $(TESTFILES) \
 		README.md sql scripts mock TODO 2>/dev/null || \
 	tar -czf $(BUILD_DIR)/dist/nrest-api-latest.tar.gz \
-		Makefile nrest-api.c test_nrest_api.c README.md 2>/dev/null
+		Makefile $(SRCFILES) $(TESTFILES) README.md 2>/dev/null
 	@echo "Distribution archive created: $(BUILD_DIR)/dist/nrest-api-latest.tar.gz"
 
 # Help target
@@ -138,10 +128,7 @@ help:
 	@echo "  make debug        - Build with debug symbols and sanitizers"
 	@echo "  make release      - Build optimized release version"
 	@echo "  make run          - Run the server"
-	@echo "  make test         - Build and run tests (local only)"
-	@echo "  make test-upstream - Run tests with upstream comparison"
-	@echo "  make test-verbose  - Run tests with verbose output"
-	@echo "  make test-full    - Run tests with upstream and verbose"
+	@echo "  make test         - Build and run test suite"
 	@echo "  make clean        - Remove build artifacts"
 	@echo "  make clean-all    - Remove build artifacts and database"
 	@echo "  make dist         - Create distribution archive"
@@ -151,4 +138,4 @@ help:
 	@echo "  PORT=$(PORT)      - Server port"
 	@echo "  DATABASE_FILE=$(DATABASE_FILE) - Database file path"
 
-.PHONY: all db debug release run clean clean-all dist setup-mocks test test-build test-upstream test-verbose test-full help
+.PHONY: all db debug release run clean clean-all dist setup-mocks test help
